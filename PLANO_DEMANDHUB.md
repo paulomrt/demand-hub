@@ -15,7 +15,7 @@ O **DemandHub** é uma plataforma de planejamento de demanda que permite a cria�
 - Indicadores estatísticos e sugestões inteligentes de forecast
 - Sistema de rateio hierárquico
 - Controle de permissões granular
-- Gestão de etapas e rodadas de planejamento
+- Gestão de etapas e ciclos de planejamento
 - Gerenciamento de preços para análises financeiras
 - Sistema de de-para (mapeamento) de produtos e hierarquia
 - Detecção de lacunas e inconsistências entre planos
@@ -80,8 +80,8 @@ O DemandHub herdará **exatamente** o design system do StockHub:
 │                 ├─── hierarchy_nodes  (nós: regional, vendedor)  │
 │                 ├─── products         (SKUs)                     │
 │                 ├─── plans            (planos: histórico, fc1…)  │
-│                 ├─── rounds           (rodadas de planejamento)  │
-│                 ├─── stages           (etapas das rodadas)       │
+│                 ├─── cycles           (ciclos de planejamento)   │
+│                 ├─── stages           (etapas dos ciclos)        │
 │                 ├─── price_tables     (tabelas de preços)        │
 │                 └─── mapping_rules    (de-para)                  │
 │                                                                 │
@@ -98,7 +98,7 @@ O DemandHub herdará **exatamente** o design system do StockHub:
 │                                                                 │
 │  roles ─────────── role_permissions                              │
 │  user_assignments  (user × hierarchy_node × plan × permissões)  │
-│  period_locks      (round × period × editável ou não)           │
+│  period_locks      (cycle × period × editável ou não)           │
 │                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                      INDICADORES                               │
@@ -213,28 +213,28 @@ CREATE TABLE plans (
 );
 ```
 
-#### `rounds` — Rodadas de planejamento
+#### `cycles` — Ciclos de planejamento
 ```sql
--- Ex: "Rodada Janeiro 2025", "Rodada Fevereiro 2025"
-CREATE TABLE rounds (
+-- Ex: "Ciclo Janeiro 2025", "Ciclo Fevereiro 2025"
+CREATE TABLE cycles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  reference_month DATE NOT NULL,   -- Mês de referência da rodada
-  start_date DATE NOT NULL,        -- Início da rodada
-  end_date DATE NOT NULL,          -- Fim da rodada
+  reference_month DATE NOT NULL,   -- Mês de referência do ciclo
+  start_date DATE NOT NULL,        -- Início do ciclo
+  end_date DATE NOT NULL,          -- Fim do ciclo
   status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'open', 'in_progress', 'closed', 'archived')),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 ```
 
-#### `stages` — Etapas dentro de uma rodada
+#### `stages` — Etapas dentro de um ciclo
 ```sql
 -- Ex: "Etapa 1: Preenchimento Vendedor", "Etapa 2: Revisão Gerente"
 CREATE TABLE stages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  round_id UUID REFERENCES rounds(id) ON DELETE CASCADE,
+  cycle_id UUID REFERENCES cycles(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
   stage_order INT NOT NULL,
@@ -252,7 +252,7 @@ CREATE TABLE stages (
 CREATE TABLE period_locks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
-  round_id UUID REFERENCES rounds(id) ON DELETE CASCADE,
+  cycle_id UUID REFERENCES cycles(id) ON DELETE CASCADE,
   period_start DATE NOT NULL,
   period_end DATE NOT NULL,
   is_locked BOOLEAN DEFAULT false,
@@ -271,7 +271,7 @@ CREATE TABLE demand_data (
   org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
   plan_id UUID REFERENCES plans(id) ON DELETE CASCADE,
   product_id UUID REFERENCES products(id) ON DELETE CASCADE,
-  round_id UUID REFERENCES rounds(id) ON DELETE SET NULL,
+  cycle_id UUID REFERENCES cycles(id) ON DELETE SET NULL,
   -- Hierarquia: armazena o caminho completo como array de node IDs
   hierarchy_path UUID[] NOT NULL,  -- [regional_id, gerente_id, vendedor_id]
   period_date DATE NOT NULL,       -- Mês/período do dado (ex: 2025-01-01)
@@ -287,7 +287,7 @@ CREATE INDEX idx_demand_plan ON demand_data(plan_id);
 CREATE INDEX idx_demand_product ON demand_data(product_id);
 CREATE INDEX idx_demand_period ON demand_data(period_date);
 CREATE INDEX idx_demand_hierarchy ON demand_data USING GIN(hierarchy_path);
-CREATE INDEX idx_demand_round ON demand_data(round_id);
+CREATE INDEX idx_demand_cycle ON demand_data(cycle_id);
 ```
 
 #### `price_tables` — Tabelas de preços
@@ -333,7 +333,7 @@ CREATE TABLE roles (
 CREATE TABLE role_permissions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-  resource TEXT NOT NULL,          -- Ex: 'plan', 'round', 'hierarchy', 'admin', 'price'
+  resource TEXT NOT NULL,          -- Ex: 'plan', 'cycle', 'hierarchy', 'admin', 'price'
   action TEXT NOT NULL,            -- Ex: 'view', 'edit', 'create', 'delete', 'export'
   conditions JSONB DEFAULT '{}',   -- Condições extras (ex: {"plan_types": ["forecast"]})
   UNIQUE(role_id, resource, action)
@@ -554,7 +554,7 @@ SKU-001 (descontinuado)  ──────mapping_rule────── ▶  S
 |---|---|
 | **Fill Rate** | Taxa de preenchimento (SKUs com dados / Total SKUs) |
 | **Cobertura Hierárquica** | % de nós hierárquicos com dados preenchidos |
-| **Evolução por Rodada** | Evolução do forecast entre rodadas |
+| **Evolução por Ciclo** | Evolução do forecast entre ciclos |
 | **Concentração** | Índice de concentração (Pareto) por SKU ou hierarquia |
 | **Receita Projetada** | Volume × Preço (integração com tabela de preços) |
 | **Gap Count** | Quantidade de lacunas não resolvidas |
@@ -580,7 +580,7 @@ O sistema deve oferecer sugestões estatísticas:
 │                    RECURSOS                        │
 ├────────────────────────────────────────────────────┤
 │  plan          → view, edit, create, delete        │
-│  round         → view, edit, create, close         │
+│  cycle          → view, edit, create, close         │
 │  stage         → view, edit, create                │
 │  hierarchy     → view, edit, create, delete        │
 │  product       → view, edit, create, delete        │
@@ -600,7 +600,7 @@ O sistema deve oferecer sugestões estatísticas:
 | Role | Descrição | Permissões |
 |---|---|---|
 | **Admin** | Administrador total | Acesso total a todas funcionalidades |
-| **Manager** | Gerente de demanda | Edita planos, gerencia rodadas, vê todos os níveis |
+| **Manager** | Gerente de demanda | Edita planos, gerencia ciclos, vê todos os níveis |
 | **Planner** | Planejador | Edita o forecast no seu nível hierárquico |
 | **Viewer** | Visualizador | Apenas consulta dados e KPIs |
 | **API User** | Integração | Acesso via API apenas |
@@ -613,9 +613,27 @@ O sistema deve oferecer sugestões estatísticas:
 
 ---
 
-## 8. Sistema de Etapas e Rodadas
+## 8. Sistema de Ciclos e Etapas
 
-### 8.1 Ciclo de Vida de uma Rodada
+> **Nomenclatura**: O termo **"Ciclo"** substitui o antigo "Rodada" por ser mais intuitivo e alinhado à terminologia S&OP/IBP.
+
+### 8.1 O que é um Ciclo?
+
+Um **Ciclo** é o processo mensal (ou periódico) de planejamento de demanda. Cada ciclo agrupa todo o trabalho de coleta, revisão e aprovação de forecasts para um mês de referência.
+
+```
+CICLO "Janeiro 2025"
+│
+├── Referência: Janeiro/2025
+├── Vigência: 02/Jan/2025 → 20/Jan/2025
+├── Horizonte de edição: Fev/25, Mar/25, Abr/25, Mai/25… (futuros)
+│
+├── Etapa 1: "Input Vendedores"     (02/Jan → 10/Jan)
+├── Etapa 2: "Revisão Gerentes"     (11/Jan → 17/Jan)
+└── Etapa 3: "Aprovação Diretoria"  (18/Jan → 20/Jan)
+```
+
+### 8.2 Ciclo de Vida
 
 ```
   DRAFT → OPEN → IN_PROGRESS → CLOSED → ARCHIVED
@@ -631,24 +649,293 @@ O sistema deve oferecer sugestões estatísticas:
     └──────────── Pode reabrir ────────────────┘
 ```
 
-### 8.2 Períodos Editáveis
+| Status | Significado |
+|---|---|
+| `draft` | Ciclo criado, ainda em configuração (etapas, períodos, planos) |
+| `open` | Ciclo aberto, aguardando início da primeira etapa |
+| `in_progress` | Pelo menos uma etapa está ativa — edição habilitada conforme permissões |
+| `closed` | Todas as etapas finalizadas — dados são somente leitura |
+| `archived` | Ciclo arquivado — não aparece mais na lista principal |
 
-Cada rodada define quais períodos futuros podem ser editados:
+### 8.3 O que é uma Etapa?
+
+Uma **Etapa** é uma janela de tempo dentro de um ciclo onde um conjunto específico de usuários pode editar planos específicos.
+
+#### Cada etapa define 4 dimensões de controle:
 
 ```
-Rodada de Janeiro/2025
-├── Período Jan/25: TRAVADO (realizado)
+┌─────────────────────────────────────────────────────────────────┐
+│                     ETAPA = 4 DIMENSÕES                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. QUANDO?  → start_date e end_date                           │
+│     Janela temporal em que a etapa está ativa                   │
+│                                                                 │
+│  2. QUEM?    → allowed_hierarchy_levels UUID[]                 │
+│     Quais níveis da hierarquia podem editar                    │
+│     Ex: [vendedor_level_id] ou [gerente_level_id]              │
+│     Se vazio/null → TODOS os níveis podem editar               │
+│                                                                 │
+│  3. O QUÊ?   → allowed_plans UUID[]                            │
+│     Quais planos podem ser editados                            │
+│     Ex: [forecast_1_id] ou [forecast_1_id, forecast_2_id]      │
+│     Se vazio/null → TODOS os planos editáveis                  │
+│                                                                 │
+│  4. QUANDO? (períodos) → Herdado do ciclo + period_locks       │
+│     Quais períodos de tempo podem ser editados                 │
+│     (Definido pela travamento de períodos do ciclo)             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 8.4 Fluxo Completo de um Ciclo — Exemplo Detalhado
+
+```
+══════════════════════════════════════════════════════════════════
+ CICLO "Janeiro 2025" — Empresa com 3 Níveis Hierárquicos
+══════════════════════════════════════════════════════════════════
+
+ Hierarquia:  Diretoria (nível 1) → Gerência (nível 2) → Vendedor (nível 3)
+ Plano alvo:  Forecast 1
+ Períodos:    Jan/25 TRAVADO | Fev/25 → Jun/25 EDITÁVEIS
+
+──────────────────────────────────────────────────────────────────
+ ETAPA 1: "Input dos Vendedores"
+ Período: 02/Jan → 10/Jan (9 dias)
+──────────────────────────────────────────────────────────────────
+ Quem edita:    Vendedores (nível 3)
+ Qual plano:    Forecast 1
+ O que acontece:
+   • Cada vendedor acessa o grid de planejamento
+   • Vê apenas seus SKUs × seus períodos editáveis (Fev→Jun)
+   • Preenche/ajusta volumes de demanda
+   • Pode usar sugestões inteligentes (média móvel, tendência)
+   • Pode importar dados via CSV
+   • Gerentes e Diretores veem os dados, mas NÃO podem editar
+   • Status: 🟢 Editável para vendedores | 🔒 Leitura para demais
+
+──────────────────────────────────────────────────────────────────
+ ETAPA 2: "Revisão dos Gerentes"
+ Período: 11/Jan → 17/Jan (7 dias)
+──────────────────────────────────────────────────────────────────
+ Quem edita:    Gerentes (nível 2)
+ Qual plano:    Forecast 1
+ O que acontece:
+   • Gerentes veem o input consolidado de TODOS os vendedores
+     sob sua gestão
+   • Podem ajustar valores individualmente (célula por célula)
+   • Podem fazer RATEIO top-down: editar o total da gerência
+     e distribuir proporcionalmente para os vendedores
+   • Podem comparar com Histórico ou Orçamento (side-by-side)
+   • Vendedores veem as alterações, mas NÃO podem mais editar
+   • Status: 🟢 Editável para gerentes | 🔒 Leitura para demais
+
+──────────────────────────────────────────────────────────────────
+ ETAPA 3: "Aprovação da Diretoria"
+ Período: 18/Jan → 20/Jan (3 dias)
+──────────────────────────────────────────────────────────────────
+ Quem edita:    Diretores (nível 1)
+ Qual plano:    Forecast 1
+ O que acontece:
+   • Diretores veem o forecast consolidado de TODA a empresa
+   • Podem fazer ajustes finais (rateio top-down)
+   • Veem KPIs comparativos vs. Histórico e Orçamento
+   • Ao finalizar, o ciclo é fechado (CLOSED)
+   • Status: 🟢 Editável para diretores | 🔒 Leitura para demais
+
+══════════════════════════════════════════════════════════════════
+```
+
+### 8.5 Configurações Avançadas de Etapas
+
+#### Etapas Simultâneas (Multi-nível)
+
+Por padrão, as etapas são **sequenciais** (vendedores → gerentes → diretores). Porém, é possível configurar **etapas com múltiplos níveis editando ao mesmo tempo**:
+
+```
+CONFIGURAÇÃO AVANÇADA — Etapa com edição multi-nível:
+
+Etapa "Planejamento Colaborativo" (02/Jan → 15/Jan)
+├── Quem edita: [Vendedores, Gerentes]    ← ambos editam
+├── Qual plano: Forecast 1
+└── Períodos: Fev/25 → Jun/25
+
+Neste cenário:
+• Vendedores editam seus próprios nós (folhas da hierarquia)
+• Gerentes editam e podem fazer rateio top-down
+• A resolução de conflitos é automática (ver Seção 8.6)
+```
+
+#### Etapas com Múltiplos Planos
+
+Uma etapa pode permitir edição de mais de um plano simultaneamente:
+
+```
+Etapa "Atualização Multi-forecast"
+├── Quem edita: Gerentes
+├── Quais planos: [Forecast 1, Forecast 2]    ← dois planos
+└── O gerente pode copiar dados entre planos, ajustar cenários
+```
+
+### 8.6 Edição Concorrente e Resolução de Conflitos
+
+O DemandHub suporta **edição simultânea** por múltiplos usuários na mesma etapa. A concorrência é gerenciada em 3 camadas:
+
+#### Camada 1 — Presença em Tempo Real (Supabase Realtime)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│          GRID DE PLANEJAMENTO — Presença                 │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│         │ Fev/25 │ Mar/25 │ Abr/25 │ Mai/25 │          │
+│  SKU-001│ 1.200  │  [MS]  │  950   │  980   │          │
+│  SKU-002│  850   │  900   │  [JP]  │  780   │          │
+│  SKU-003│  430   │  450   │  460   │  470   │          │
+│                                                          │
+│  [MS] = Maria Santos está editando esta célula           │
+│  [JP] = João Pereira está editando esta célula           │
+│                                                          │
+│  → Avatares/iniciais aparecem sobre a célula ativa       │
+│  → Cores distintas por usuário                           │
+│  → Atualização em tempo real via Supabase Realtime       │
+│    (canal: `presence:planning:{org_id}:{plan_id}`)       │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Implementação técnica:**
+- Cada usuário publica sua posição (célula selecionada) via Supabase Realtime Presence
+- Outros usuários recebem atualizações em tempo real e renderizam avatares
+- Quando um usuário sai da célula ou desconecta, o indicador desaparece
+
+#### Camada 2 — Optimistic Locking (Proteção contra Conflitos)
+
+Cada célula de demanda possui um campo `updated_at`. O fluxo de salvamento funciona assim:
+
+```
+1. Usuário A abre célula (SKU-001 × Mar/25)
+   → Sistema registra: loaded_at = "2025-01-10 09:00:00"
+
+2. Usuário A edita o valor: 1.000 → 1.200
+
+3. Ao salvar, o sistema verifica:
+   → "O updated_at atual no banco é igual ao loaded_at?"
+
+4a. SIM → Salva normalmente, atualiza updated_at
+    → Broadcast via Realtime para outros clientes
+
+4b. NÃO → CONFLITO DETECTADO!
+    → Dialog:
+    ┌──────────────────────────────────────────┐
+    │ ⚠️ Conflito de Edição                    │
+    │                                          │
+    │ Maria Santos editou esta célula às 09:02 │
+    │                                          │
+    │ Valor atual no sistema:  1.150           │
+    │ Seu valor editado:       1.200           │
+    │                                          │
+    │ [Substituir pelo meu] [Manter o atual]   │
+    │ [Ver histórico]                          │
+    └──────────────────────────────────────────┘
+```
+
+#### Camada 3 — Conflitos de Rateio (Top-Down × Bottom-Up)
+
+Este é o cenário mais crítico: **um gerente faz rateio top-down enquanto vendedores estão editando as mesmas células**. Isso pode acontecer em etapas configuradas com edição multi-nível.
+
+```
+CENÁRIO DE CONFLITO — Rateio durante edição simultânea:
+
+Gerente "João" quer distribuir 10.000un do SKU-001 entre 3 vendedores
+Enquanto isso, Vendedora "Maria" está editando SKU-001 × Mar/25 = 350un
+
+BEHAVIOR DO SISTEMA:
+──────────────────────────────────────────────────────────
+
+1. João inicia o rateio no nível Gerência
+   → Sistema calcula a distribuição proporcional:
+     • Vendedor A: 4.000 (40%)
+     • Vendedor B (Maria): 3.500 (35%)
+     • Vendedor C: 2.500 (25%)
+
+2. ANTES de aplicar, o sistema mostra o PREVIEW:
+   ┌──────────────────────────────────────────────────────┐
+   │ 📊 Preview do Rateio — SKU-001 × Mar/25             │
+   │                                                      │
+   │ Total da Gerência: 10.000un                          │
+   │ Método: Proporcional ao Histórico                    │
+   │                                                      │
+   │ Vendedor      │ Atual │ Novo  │ Status               │
+   │ Vendedor A    │ 3.800 │ 4.000 │ ✅ Sem conflito      │
+   │ Maria Santos  │  350* │ 3.500 │ ⚠️ Editando agora   │
+   │ Vendedor C    │ 2.400 │ 2.500 │ ✅ Sem conflito      │
+   │                                                      │
+   │ * Maria está editando esta célula neste momento      │
+   │                                                      │
+   │ [Aplicar rateio]  [Excluir Maria do rateio]          │
+   │ [Cancelar]        [Notificar Maria e aguardar]       │
+   └──────────────────────────────────────────────────────┘
+
+3. OPÇÕES para o gerente:
+   a) "Aplicar rateio" → Todas as células são atualizadas.
+      Maria recebe notificação em tempo real:
+      "João distribuiu o volume de SKU-001 via rateio.
+       Seu valor foi alterado de 350 para 3.500."
+      A célula de Maria é recarregada com o novo valor.
+
+   b) "Excluir Maria do rateio" → O rateio é aplicado
+      apenas para Vendedor A e Vendedor C. O volume
+      restante (10.000 - 350 - distribuição de A e C) é
+      redistribuído entre os outros dois.
+
+   c) "Notificar Maria e aguardar" → Maria recebe um
+      pedido para finalizar sua edição. O rateio fica
+      pendente até ela salvar ou liberar a célula.
+
+   d) "Cancelar" → Nada acontece.
+```
+
+#### Regra de Hierarquia na Concorrência
+
+```
+REGRA GERAL DE PRIORIDADE:
+
+• Edições de nível superior TÊM PRIORIDADE sobre nível inferior
+  quando ambos editam a MESMA célula na MESMA etapa
+
+• Rateio top-down SEMPRE mostra preview antes de aplicar
+  e SEMPRE notifica os usuários afetados
+
+• Rateio bottom-up (agregação) NUNCA conflita:
+  ele apenas recalcula totais nos níveis superiores
+
+• Se a empresa quer EVITAR conflitos: usar etapas sequenciais
+  (padrão recomendado)
+```
+
+### 8.7 Períodos Editáveis e Travamento
+
+Cada ciclo define quais períodos de tempo podem ser editados:
+
+```
+Ciclo de Janeiro/2025 (período de referência: Jan/25)
+├── Período Jan/25: TRAVADO (realizado — dado histórico)
 ├── Período Fev/25: EDITÁVEL
 ├── Período Mar/25: EDITÁVEL
 ├── Período Abr/25: EDITÁVEL
 └── Período Mai/25 em diante: EDITÁVEL
 
-Rodada de Fevereiro/2025 (móvel)
+Ciclo de Fevereiro/2025 (período de referência: Fev/25)
 ├── Período Jan/25: TRAVADO
 ├── Período Fev/25: TRAVADO (realizado)
 ├── Período Mar/25: EDITÁVEL
 ├── Período Abr/25: EDITÁVEL
 └── Período Mai/25 em diante: EDITÁVEL
+
+→ O horizonte editável "desliza" a cada ciclo
+→ Períodos passados são automaticamente travados
+→ Admin pode travar/destravar qualquer período manualmente
 ```
 
 ---
@@ -755,7 +1042,7 @@ src/lib/i18n/
 common.*          → Botões, labels genéricos
 sidebar.*         → Menu lateral
 planning.*        → Área de planejamento
-rounds.*          → Rodadas e etapas
+cycles.*          → Ciclos e etapas
 imports.*         → Importação/exportação
 kpis.*            → Indicadores
 admin.*           → Painel administrativo
@@ -787,9 +1074,9 @@ demand-hub/
 │   │   │   │   └── page.tsx
 │   │   │   └── compare/
 │   │   │       └── page.tsx  (Comparação entre planos)
-│   │   ├── rounds/           (Rodadas)
+│   │   ├── cycles/           (Ciclos)
 │   │   │   ├── page.tsx
-│   │   │   └── [roundId]/
+│   │   │   └── [cycleId]/
 │   │   │       └── page.tsx
 │   │   ├── products/         (Cadastro de SKUs)
 │   │   │   └── page.tsx
@@ -812,7 +1099,7 @@ demand-hub/
 │   │   │   ├── users/
 │   │   │   ├── roles/
 │   │   │   ├── plans/
-│   │   │   ├── rounds/
+│   │   │   ├── cycles/
 │   │   │   ├── engagement/   (Dashboard de engajamento/audit)
 │   │   │   │   └── page.tsx
 │   │   │   └── api-keys/
@@ -875,7 +1162,7 @@ demand-hub/
 │   │   ├── products.ts
 │   │   ├── prices.ts
 │   │   ├── mappings.ts
-│   │   ├── rounds.ts
+│   │   ├── cycles.ts
 │   │   ├── permissions.ts
 │   │   ├── audit.ts          (Consultas ao audit_log)
 │   │   ├── kpi-cache.ts      (KPI cache / materialized views)
@@ -903,7 +1190,7 @@ demand-hub/
 │       ├── plans.ts
 │       ├── demand.ts
 │       ├── prices.ts
-│       ├── rounds.ts
+│       ├── cycles.ts
 │       ├── users.ts
 │       └── utils.ts
 ├── biome.json
@@ -915,9 +1202,416 @@ demand-hub/
 └── tsconfig.json
 ```
 
+## 14. Componentes e Layout por Página
+
+Cada página do DemandHub é descrita abaixo com seu layout, componentes principais e ações disponíveis.
+
+### 14.1 Dashboard (`/`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  [Sidebar]  │              DASHBOARD                            │
+│             │                                                   │
+│  📊 Dashboard│  ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+│  📋 Planning │  │ Volume   │ │ Fill Rate│ │ MAPE     │         │
+│  🔄 Ciclos   │  │ Total    │ │ 78%      │ │ 12.3%    │         │
+│  📦 Produtos │  │ 145.2k   │ │          │ │          │         │
+│  🏢 Hierarq. │  └──────────┘ └──────────┘ └──────────┘         │
+│  🔀 De-Para  │                                                  │
+│  💰 Preços   │  ┌───────────────────────────────────────┐       │
+│  📈 Indicad. │  │    Gráfico de Evolução (Recharts)     │       │
+│  📥 Import.  │  │    Volume × Período × Planos          │       │
+│  ⚠️ Alertas  │  │                                       │       │
+│  ⚙️ Config.  │  └───────────────────────────────────────┘       │
+│  👤 Admin    │                                                  │
+│             │  ┌──────────────┐ ┌──────────────────────┐        │
+│             │  │ Ciclo Ativo  │ │ Alertas Pendentes    │        │
+│             │  │ Jan/2025     │ │ 3 lacunas            │        │
+│             │  │ Etapa 2 de 3 │ │ 2 produtos sem mapa  │        │
+│             │  └──────────────┘ └──────────────────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Componente | Descrição |
+|---|---|
+| **KPI Cards** | Cards modulares (drag & drop) exibindo KPIs configurados pelo usuário |
+| **Gráfico de Evolução** | Recharts Line/Area chart — volume ao longo do tempo, multi-plano |
+| **Status do Ciclo** | Widget mostrando o ciclo ativo, etapa atual e progresso |
+| **Alertas Resumidos** | Contagem de lacunas e ações pendentes |
+| **Seletor de Filtros** | Org, Plano, Hierarquia, Período — persistidos na sessão |
+
+**Ações**: Navegar para qualquer seção, configurar KPIs visíveis, filtrar contexto global.
+
 ---
 
-## 14. Fases de Implementação
+### 14.2 Planejamento (`/planning`)
+
+Esta é a **página central** do DemandHub — o grid editável de demanda.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PLANEJAMENTO DE DEMANDA                                        │
+│                                                                 │
+│  Plano: [Forecast 1 ▼]  Ciclo: [Jan/2025 ▼]  Etapa: Input     │
+│  Hierarquia: [Diretoria ▼] > [Gerência Sul ▼] > [Todos ▼]     │
+│  Período: [Fev/25 → Jun/25]                                    │
+│                                                                 │
+│  [Sugestões IA] [Importar CSV] [Exportar] [Rateio ▼]          │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │            │ Fev/25 │ Mar/25 │ Abr/25 │ Mai/25 │ Total  │   │
+│  ├────────────┼────────┼────────┼────────┼────────┼────────┤   │
+│  │ SKU-001    │ 1.200▍ │  [MS]  │  950   │  980   │ 4.130  │   │
+│  │ SKU-002    │  850   │  900   │  [JP]  │  780   │ 3.530  │   │
+│  │ SKU-003    │  430   │  450   │  460   │  470   │ 1.810  │   │
+│  │ SKU-004    │  --    │  --    │  --    │  --    │   0    │   │
+│  │ ...        │        │        │        │        │        │   │
+│  │ TOTAL      │ 2.480  │ 2.350* │ 2.410* │ 2.230  │ 9.470  │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ▍ = Célula sendo editada por você                              │
+│  [MS] [JP] = Outros usuários editando (Realtime Presence)       │
+│  -- = Célula vazia (sem preenchimento)                          │
+│  * = Valor alterado nesta sessão (marcador visual)              │
+│                                                                 │
+│  📊 Mini-comparação: Forecast 1 vs Histórico (toggle)          │
+│  ┌────────────┬────────┬────────┬──────┐                        │
+│  │ SKU-001    │ FC1    │ Hist.  │ Var% │                        │
+│  │            │ 1.200  │ 1.100  │ +9%  │                        │
+│  └────────────┴────────┴────────┴──────┘                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Componente | Descrição |
+|---|---|
+| **Planning Grid** | TanStack Table editável — colunas por período, linhas por SKU |
+| **Filtro de Contexto** | Plano, Ciclo, Hierarquia (breadcrumb navegável), Período |
+| **Barra de Ações** | Sugestões IA, Import CSV, Export, Rateio (dropdown com métodos) |
+| **Presença Realtime** | Avatares/iniciais de outros usuários nas células ativas |
+| **Mini-comparação** | Painel lateral toggleable para comparar com outro plano |
+| **Indicators Bar** | Footer com totais, MAPE, Fill Rate do contexto atual |
+
+**Ações**: Editar células, auto-save, rateio (top-down/bottom-up), importar CSV, exportar, aplicar sugestão IA, comparar com outro plano.
+
+**Permissões**: Somente usuários com role e etapa ativa podem editar. Demais veem somente leitura.
+
+---
+
+### 14.3 Comparação de Planos (`/planning/compare`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  COMPARAÇÃO DE PLANOS                                           │
+│                                                                 │
+│  Plano A: [Forecast 1 ▼]   vs   Plano B: [Histórico ▼]       │
+│  Hierarquia: [Gerência Sul ▼]  Período: [Fev/25 → Jun/25]     │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ SKU       │ A: FC1 │ B: Hist│ Δ Abs │ Δ %   │ Status  │   │
+│  ├───────────┼────────┼────────┼───────┼───────┼─────────┤   │
+│  │ SKU-001   │ 1.200  │ 1.100  │ +100  │ +9.1% │ 🟢      │   │
+│  │ SKU-002   │  850   │ 1.000  │ -150  │-15.0% │ 🔴      │   │
+│  │ SKU-003   │  430   │  420   │  +10  │ +2.4% │ 🟢      │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  📊 Gráfico comparativo (bar chart agrupado por período)        │
+│  📊 Scatter plot: Plano A vs Plano B (correlação)               │
+│  📊 KPIs: MAPE=12.3% | Bias=+3.2% | Hit Rate (±10%)=78%      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Componente | Descrição |
+|---|---|
+| **Comparison Grid** | Tabela lado-a-lado com delta absoluto e percentual |
+| **Status Semáforo** | 🟢 dentro da margem, 🟡 marginal, 🔴 fora da margem |
+| **Gráficos** | Bar chart agrupado, Scatter plot, Line chart overlay |
+| **KPI Panel** | MAPE, WMAPE, Bias, Hit Rate, Correlação — para o contexto |
+
+**Ações**: Selecionar planos, filtrar hierarquia/período, exportar comparação, ajustar margem do semáforo.
+
+---
+
+### 14.4 Gestão de Ciclos (`/cycles`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  GESTÃO DE CICLOS                                     [+ Novo]  │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ Ciclo         │ Referência│ Status      │ Progresso    │    │
+│  ├───────────────┼──────────┼─────────────┼──────────────┤    │
+│  │ Ciclo Jan/25  │ Jan/2025 │ 🟢 Ativo    │ Etapa 2 de 3│    │
+│  │ Ciclo Dez/24  │ Dez/2024 │ ✅ Fechado  │ Completo    │    │
+│  │ Ciclo Nov/24  │ Nov/2024 │ 📦 Arquivado│ Completo    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                 │
+│  ────── Detalhes: Ciclo Jan/2025 ──────                        │
+│                                                                 │
+│  Etapas:                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ # │ Etapa                │ Período         │ Quem edita │    │
+│  ├───┼──────────────────────┼─────────────────┼────────────┤    │
+│  │ 1 │ Input Vendedores     │ 02/Jan → 10/Jan │ Vendedores │    │
+│  │ 2 │ Revisão Gerentes ●   │ 11/Jan → 17/Jan │ Gerentes   │    │
+│  │ 3 │ Aprovação Diretoria  │ 18/Jan → 20/Jan │ Diretores  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│  ● = Etapa ativa                                                │
+│                                                                 │
+│  Períodos:  Jan/25 🔒 | Fev/25 ✏️ | Mar/25 ✏️ | Abr/25 ✏️    │
+│                                                                 │
+│  [Fechar Ciclo] [Reabrir] [Editar Etapas] [Gerenciar Períodos] │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Criar ciclo, configurar etapas (wizard), definir períodos editáveis, abrir/fechar ciclo, visualizar histórico de ciclos.  
+**Permissões**: Admin e Manager.
+
+---
+
+### 14.5 Cadastro de Produtos (`/products`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CADASTRO DE PRODUTOS (SKUs)              [+ Novo] [Importar]   │
+│                                                                 │
+│  🔍 Buscar: [_______________]  Categoria: [Todas ▼]            │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ SKU      │ Nome           │ Categoria │ Unid.│ Status   │   │
+│  ├──────────┼────────────────┼───────────┼──────┼──────────┤   │
+│  │ SKU-001  │ Produto Alpha  │ Alimentos │ cx   │ 🟢 Ativo│   │
+│  │ SKU-002  │ Produto Beta   │ Bebidas   │ lt   │ 🟢 Ativo│   │
+│  │ SKU-003  │ Produto Gamma  │ Limpeza   │ un   │ 🔴 Inat.│   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  📊 Resumo: 80 ativos | 5 inativos | 3 sem mapeamento          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: CRUD de produtos, importação/exportação CSV, ativar/desativar, busca e filtro.
+
+---
+
+### 14.6 Estrutura Hierárquica (`/hierarchy`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ESTRUTURA HIERÁRQUICA                      [+ Nível] [+ Nó]   │
+│                                                                 │
+│  Níveis: Diretoria (1) → Gerência (2) → Vendedor (3)          │
+│                                                                 │
+│  🌳 Visualização em Árvore:                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ ▼ 📁 Diretoria Comercial (DIR-001)                       │   │
+│  │   ▼ 📁 Gerência Sul (GER-001)                            │   │
+│  │     ├── 👤 Maria Santos (VEN-001)                        │   │
+│  │     ├── 👤 João Silva (VEN-002)                          │   │
+│  │     └── 👤 Ana Costa (VEN-003)                           │   │
+│  │   ▶ 📁 Gerência Norte (GER-002)                          │   │
+│  │   ▶ 📁 Gerência Sudeste (GER-003)                        │   │
+│  │ ▶ 📁 Diretoria Industrial (DIR-002)                       │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  [Importar CSV] [Expandir tudo] [Colapsar tudo]                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: CRUD de níveis e nós, importação CSV, visualização em árvore, reordenar nós, ativar/desativar. Informações adaptativas conforme o número de níveis da organização.
+
+---
+
+### 14.7 Mapeamentos De-Para (`/mappings`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  MAPEAMENTOS (DE-PARA)                              [+ Novo]    │
+│                                                                 │
+│  Tipo: [Produtos ▼]                                             │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Origem       │ Destino      │ Desde    │ Merge │ Status │   │
+│  ├──────────────┼──────────────┼──────────┼───────┼────────┤   │
+│  │ SKU-OLD-001  │ SKU-NEW-001  │ 01/2025  │ ✅ Sim│ Ativo  │   │
+│  │ VEN-003      │ VEN-007      │ 03/2025  │ ❌ Não│ Ativo  │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ⚠️ 2 produtos sem mapeamento pendente                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Criar mapeamento, escolher se unifica histórico (merge), ver impacto antes de aplicar, resolver alertas de entidades sem mapa.
+
+---
+
+### 14.8 Tabelas de Preços (`/prices`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TABELAS DE PREÇOS                          [+ Tabela] [Import] │
+│                                                                 │
+│  Tabela ativa: [Tabela Jan/2025 ▼]  Moeda: BRL                 │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ SKU      │ Nome           │ Preço Unit.│ Última Atualiz. │   │
+│  ├──────────┼────────────────┼────────────┼─────────────────┤   │
+│  │ SKU-001  │ Produto Alpha  │ R$ 45,00   │ 05/Jan/2025     │   │
+│  │ SKU-002  │ Produto Beta   │ R$ 12,50   │ 05/Jan/2025     │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  💰 Receita Projetada (FC1 × Preço): R$ 1.234.567,00           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: CRUD de tabelas de preço, importação CSV, edição inline de preços, visualização de receita projetada.
+
+---
+
+### 14.9 Dashboard de KPIs (`/indicators`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  INDICADORES                         [⚙️ Configurar Dashboard]  │
+│                                                                 │
+│  Contexto: FC1 vs Histórico | Gerência Sul | Últimos 6 meses   │
+│                                                                 │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐   │
+│  │ MAPE       │ │ WMAPE      │ │ Bias       │ │ Hit Rate   │   │
+│  │ 12.3%  ▼   │ │ 10.8%  ▼   │ │ +3.2%  ▲   │ │ 78%    ▲   │   │
+│  └────────────┘ └────────────┘ └────────────┘ └────────────┘   │
+│                                                                 │
+│  ┌───────────────────────────────────────────┐                  │
+│  │   📊 MAPE por SKU (bar chart horizontal)  │                  │
+│  │   Top 10 SKUs com maior erro              │                  │
+│  └───────────────────────────────────────────┘                  │
+│                                                                 │
+│  ┌───────────────────────┐ ┌───────────────────────┐            │
+│  │ 📈 Evolução de Bias   │ │ 📊 Contribuição por   │            │
+│  │ (line, últimos 6 ci-  │ │ nível hierárquico     │            │
+│  │ clos)                 │ │ (pie chart)           │            │
+│  └───────────────────────┘ └───────────────────────┘            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Configurar quais KPIs exibir (drag & drop), redimensionar cards, filtrar contexto, exportar relatório de KPIs.  
+**Dados**: Todos os KPIs vêm do backend (materialized views / kpi_cache).
+
+---
+
+### 14.10 Importação/Exportação (`/imports`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  IMPORTAÇÃO / EXPORTAÇÃO                                        │
+│                                                                 │
+│  ┌── Importar ──────────────────────────────────────────────┐   │
+│  │                                                          │   │
+│  │  Tipo: [Demanda ▼]  Plano alvo: [Forecast 1 ▼]         │   │
+│  │                                                          │   │
+│  │  📎 Arraste um arquivo CSV aqui ou [Selecionar Arquivo]  │   │
+│  │                                                          │   │
+│  │  ✅ Preview: 150 linhas | 3 erros | 147 válidas         │   │
+│  │  [Ver erros] [Importar 147 registros] [Cancelar]         │   │
+│  │                                                          │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌── Histórico de Importações ──────────────────────────────┐   │
+│  │ Data       │ Tipo    │ Arquivo      │ OK  │ Erros│ Status│   │
+│  │ 10/Jan     │ Demanda │ dados.csv    │ 147 │ 3    │ ✅    │   │
+│  │ 08/Jan     │ Produto │ skus.csv     │ 80  │ 0    │ ✅    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌── Exportar ──────────────────────────────────────────────┐   │
+│  │ Tipo: [Demanda ▼]  Formato: [CSV ▼]                     │   │
+│  │ Filtros: [Plano ▼] [Hierarquia ▼] [Período ▼]           │   │
+│  │ [Exportar]                                               │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Upload CSV, validação com Zod, preview com contagem de erros, importação com transação, histórico de importações, exportação filtrada CSV/XLSX.
+
+---
+
+### 14.11 Alertas e Lacunas (`/alerts`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ALERTAS E LACUNAS                              [Executar scan]  │
+│                                                                 │
+│  Abertos: 5  │  Resolvidos: 12  │  Total: 17                   │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Tipo              │ Detalhe                │ Ação       │   │
+│  ├───────────────────┼────────────────────────┼────────────┤   │
+│  │ 🟡 missing_in_plan│ SKU-001 em Hist. mas   │ [Resolver] │   │
+│  │                   │ não em FC1 (Mar/25)    │            │   │
+│  │ 🔴 unmapped_prod  │ SKU-NEW-005 sem de-para│ [Mapear]   │   │
+│  │ 🟡 missing_in_plan│ SKU-002 período Abr/25 │ [Resolver] │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Executar scan de lacunas, resolver alertas individualmente ou em lote, navegar para a célula afetada no grid.
+
+---
+
+### 14.12 Painel Administrativo (`/admin`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ADMINISTRAÇÃO                                                   │
+│                                                                 │
+│  [Usuários] [Roles] [Planos] [Ciclos] [Engajamento] [API Keys] │
+│                                                                 │
+│  ── Tab: Usuários ──────────────────────────────────────────    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Nome           │ Email          │ Role    │ Nível │ Ativo│   │
+│  ├────────────────┼────────────────┼─────────┼───────┼──────┤   │
+│  │ Maria Santos   │ maria@...      │ Planner │ Vend. │ ✅   │   │
+│  │ João Silva     │ joao@...       │ Manager │ Ger.  │ ✅   │   │
+│  │ Admin          │ admin@...      │ Admin   │ -     │ ✅   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  [+ Novo Usuário] [Importar] [Exportar XLSX]                    │
+│                                                                 │
+│  ── Tab: Engajamento ──────────────────────────────────────     │
+│  (Ver wireframe detalhado na Seção 17.5)                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações (por tab)**:
+- **Usuários**: CRUD, atribuição de roles e hierarquia, ativar/desativar
+- **Roles**: CRUD de roles customizados, atribuição de permissões por recurso
+- **Planos**: CRUD de planos, definir tipo e ordem de exibição
+- **Ciclos**: Criar/editar ciclos e etapas, gerenciar períodos
+- **Engajamento**: Dashboard de auditoria e indicadores de desempenho (§16)
+- **API Keys**: Gerar/revogar chaves de API
+
+---
+
+### 14.13 Configurações do Usuário (`/settings`)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CONFIGURAÇÕES                                                   │
+│                                                                 │
+│  [Perfil] [Aparência] [Notificações] [Idioma]                   │
+│                                                                 │
+│  Nome:   [Paulo Martins    ]                                    │
+│  Email:  p.mrtts@gmail.com (readonly)                           │
+│  Idioma: [Português (BR) ▼]                                    │
+│  Tema:   [Dark ▼]                                               │
+│  Notif.: [✅ Email] [✅ In-app] [❌ Resumo diário]              │
+│                                                                 │
+│  [Salvar] [Alterar Senha]                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Ações**: Editar perfil, trocar idioma (pt-BR/en), alternar tema (dark/light), configurar notificações, alterar senha.
+
+---
+
+## 15. Fases de Implementação
 
 ### Fase 1 — Fundação (Semanas 1-3)
 - [ ] Criar projeto Next.js com Tailwind, shadcn/ui e configuração base
@@ -941,18 +1635,20 @@ demand-hub/
 
 ### Fase 3 — Planejamento Core (Semanas 5-8)
 - [ ] Grid de planejamento (editável, com filtros por plano/hierarquia/período, adaptativo por granularidade)
+- [ ] Edição concorrente: Supabase Realtime Presence + Optimistic Locking
+- [ ] Resolução de conflitos de rateio (preview + notificação)
 - [ ] Entrada de dados de demanda
 - [ ] Sistema de rateio (apportion)
 - [ ] Importação de dados de demanda via CSV
 - [ ] Comparação entre planos (side-by-side)
 - [ ] Exportação de dados em CSV
 
-### Fase 4 — Rodadas e Permissões (Semanas 8-10)
-- [ ] CRUD de rodadas e etapas
+### Fase 4 — Ciclos e Permissões (Semanas 8-10)
+- [ ] CRUD de ciclos e etapas
 - [ ] Sistema de permissões (roles, atribuições)
 - [ ] Travamento/liberação de períodos
 - [ ] Controle de edição por etapa e nível hierárquico
-- [ ] Painel Admin (gestão de usuários, roles, planos, rodadas)
+- [ ] Painel Admin (gestão de usuários, roles, planos, ciclos)
 - [ ] Configurar audit trail (tabelas, triggers, audit_log)
 - [ ] Dashboard de engajamento (Top Contributors, Heatmap, Inativos)
 
@@ -987,12 +1683,12 @@ demand-hub/
 
 ---
 
-## 15. Decisões Técnicas Confirmadas
+## 16. Decisões Técnicas Confirmadas
 
 > [!NOTE]
 > Todas as decisões abaixo foram validadas e confirmadas. Servem como referência arquitetural para a implementação.
 
-### 15.1 Granularidade de Período — Configurável por Organização
+### 16.1 Granularidade de Período — Configurável por Organização
 
 **Decisão**: O período é **configurável por organização**, podendo ser `monthly` (mensal), `weekly` (semanal) ou `daily` (diário).
 
@@ -1063,7 +1759,7 @@ Cenários de transição:
 
 ---
 
-### 15.2 Hierarquia Adaptativa — Até 5 Níveis
+### 16.2 Hierarquia Adaptativa — Até 5 Níveis
 
 **Decisão**: O sistema suporta **até 5 níveis hierárquicos**, adaptando-se automaticamente à quantidade efetivamente utilizada por cada organização.
 
@@ -1146,7 +1842,7 @@ CREATE TRIGGER trg_max_hierarchy_levels
 
 ---
 
-### 15.3 Multi-organização (Multi-tenant)
+### 16.3 Multi-organização (Multi-tenant)
 
 **Decisão**: O DemandHub terá suporte a **múltiplas organizações desde o início**.
 
@@ -1158,7 +1854,7 @@ CREATE TRIGGER trg_max_hierarchy_levels
 
 ---
 
-### 15.4 Dados de Demanda — Volume Numérico
+### 16.4 Dados de Demanda — Volume Numérico
 
 **Decisão**: O campo `volume` em `demand_data` é exclusivamente **numérico** (`NUMERIC(18,4)`).
 
@@ -1169,7 +1865,7 @@ CREATE TRIGGER trg_max_hierarchy_levels
 
 ---
 
-### 15.5 Cálculos de KPI — Backend com Materialized Views
+### 16.5 Cálculos de KPI — Backend com Materialized Views
 
 **Decisão**: Os KPIs são calculados no **backend**, utilizando uma estratégia híbrida de **Materialized Views + SQL Functions + Cache**.
 
@@ -1235,7 +1931,7 @@ CREATE INDEX idx_kpi_cache_expiry ON kpi_cache(expires_at);
 
 ---
 
-### 15.6 Domínio e Deploy
+### 16.6 Domínio e Deploy
 
 **Decisão**: O domínio de produção será **`demandhub.com.br`**.
 
@@ -1260,7 +1956,7 @@ CNAME   staging               <pages-project>.pages.dev     ✅ Proxied
 
 ---
 
-### 15.7 Premissas Técnicas Adicionais
+### 16.7 Premissas Técnicas Adicionais
 
 1. **hierarchy_path como UUID[]**: Armazena o caminho completo da hierarquia como array. Permite queries flexíveis com GIN index. O tamanho do array corresponde ao número de níveis da organização.
 
@@ -1270,11 +1966,11 @@ CNAME   staging               <pages-project>.pages.dev     ✅ Proxied
 
 ---
 
-## 16. Sistema de Auditoria e Engajamento
+## 17. Sistema de Auditoria e Engajamento
 
 O DemandHub mantém um **audit trail completo** de todas as alterações realizadas na plataforma, servindo tanto para rastreabilidade de dados quanto para avaliação de desempenho e engajamento dos usuários.
 
-### 16.1 Tabela `audit_log` — Registro de Todas as Ações
+### 17.1 Tabela `audit_log` — Registro de Todas as Ações
 
 ```sql
 CREATE TABLE audit_log (
@@ -1282,7 +1978,7 @@ CREATE TABLE audit_log (
   org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   action TEXT NOT NULL,               -- 'create', 'update', 'delete', 'import', 'export', 'login', 'logout'
-  entity_type TEXT NOT NULL,          -- 'demand_data', 'product', 'hierarchy_node', 'plan', 'round', 'price', 'mapping', 'role', 'user_assignment'
+  entity_type TEXT NOT NULL,          -- 'demand_data', 'product', 'hierarchy_node', 'plan', 'cycle', 'price', 'mapping', 'role', 'user_assignment'
   entity_id UUID,                     -- ID do registro afetado
   changes JSONB,                      -- Snapshot do antes/depois: {"old": {...}, "new": {...}}
   metadata JSONB DEFAULT '{}',        -- Contexto adicional: IP, user-agent, plano editado, etc.
@@ -1294,7 +1990,7 @@ CREATE INDEX idx_audit_log_entity ON audit_log(entity_type, entity_id);
 CREATE INDEX idx_audit_log_action ON audit_log(action);
 ```
 
-### 16.2 Trigger Automático para `demand_data`
+### 17.2 Trigger Automático para `demand_data`
 
 ```sql
 -- Registra automaticamente toda edição na tabela de demanda
@@ -1348,7 +2044,7 @@ CREATE TRIGGER trg_audit_demand_data
   FOR EACH ROW EXECUTE FUNCTION fn_audit_demand_data();
 ```
 
-### 16.3 Tabela `user_activity_summary` — Agregações de Engajamento
+### 17.3 Tabela `user_activity_summary` — Agregações de Engajamento
 
 ```sql
 -- Tabela pre-computada (refreshed via cron) para queries rápidas no dashboard admin
@@ -1378,7 +2074,7 @@ CREATE INDEX idx_user_activity_org ON user_activity_summary(org_id, period_start
 CREATE INDEX idx_user_activity_user ON user_activity_summary(user_id, period_start DESC);
 ```
 
-### 16.4 Indicadores de Engajamento e Desempenho
+### 17.4 Indicadores de Engajamento e Desempenho
 
 Estes indicadores são calculados a partir das tabelas `audit_log` e `user_activity_summary` e apresentados no **Painel Admin** e no **Dashboard de KPIs**.
 
@@ -1400,7 +2096,7 @@ Estes indicadores são calculados a partir das tabelas `audit_log` e `user_activ
 | **Top Contributors** | Ranking dos usuários que mais contribuíram com edições no período | Reconhecimento e gestão |
 | **Usuários Inativos** | Usuários que não acessaram a plataforma nos últimos N dias | Gestão de engajamento |
 | **Heatmap de Atividade** | Mapa de calor por dia da semana × hora do dia | Identificar padrões de uso |
-| **Evolução por Rodada** | Comparação do nº de edições entre rodadas (crescendo, caindo?) | Avaliar adesão ao processo |
+| **Evolução por Ciclo** | Comparação do nº de edições entre ciclos (crescendo, caindo?) | Avaliar adesão ao processo |
 | **Fill Rate por Usuário** | % de preenchimento das células atribuídas ao usuário | Identificar gargalos |
 | **Tempo de Resposta** | Tempo entre abertura da etapa e primeira edição do usuário | Avaliar proatividade |
 
@@ -1412,7 +2108,7 @@ Estes indicadores são calculados a partir das tabelas `audit_log` e `user_activ
 | **Variabilidade de Edição** | Desvio padrão das alterações de volume (mudanças muito drásticas?) | Detectar outliers |
 | **Importações vs. Edições Manuais** | Proporção de dados importados via CSV vs. editados manualmente | Entender fluxo de trabalho |
 
-### 16.5 Visualização no Admin
+### 17.5 Visualização no Admin
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1425,7 +2121,7 @@ Estes indicadores são calculados a partir das tabelas `audit_log` e `user_activ
 │  │ Total: 15    │  │ Semana: 2.1k │  │ Meta: 95%    │          │
 │  └──────────────┘  └──────────────┘  └──────────────┘          │
 │                                                                 │
-│  📊 Top Contributors (Rodada Atual)                             │
+│  📊 Top Contributors (Ciclo Atual)                              │
 │  ┌─────┬──────────────────┬────────┬────────┬────────┐         │
 │  │ #   │ Usuário          │ Edições│ Cobert.│ Freq.  │         │
 │  ├─────┼──────────────────┼────────┼────────┼────────┤         │
@@ -1449,11 +2145,11 @@ Estes indicadores são calculados a partir das tabelas `audit_log` e `user_activ
 
 ---
 
-## 17. Gerador de Dados de Exemplo (Seeder)
+## 18. Gerador de Dados de Exemplo (Seeder)
 
 Como não existem dados reais para testes iniciais, o DemandHub incluirá um **sistema de seed** que gera dados realistas para desenvolvimento e demonstrações.
 
-### 17.1 Estratégia de Geração
+### 18.1 Estratégia de Geração
 
 O seeder cria um ecossistema completo e coerente, respeitando as relações entre as tabelas:
 
@@ -1465,8 +2161,8 @@ Ordem de execução do seeder:
 3. hierarchy_nodes (árvore completa com nós realistas)
 4. products (50-100 SKUs com categorias variadas)
 5. plans (Histórico, Orçamento, Forecast 1, Forecast 2)
-6. rounds (2-3 rodadas com etapas configuradas)
-7. stages (2-3 etapas por rodada)
+6. cycles (2-3 ciclos com etapas configuradas)
+7. stages (2-3 etapas por ciclo)
 8. price_tables (1-2 tabelas de preços)
 9. price_entries (preços por produto)
 10. demand_data (dados volumétricos com padrões realistas)
@@ -1477,7 +2173,7 @@ Ordem de execução do seeder:
 15. kpi_user_preferences (configurações de dashboard)
 ```
 
-### 17.2 Padrões Realistas nos Dados
+### 18.2 Padrões Realistas nos Dados
 
 ```typescript
 // Os dados de demanda devem incluir padrões reais:
@@ -1512,7 +2208,7 @@ const seedPatterns = {
 };
 ```
 
-### 17.3 Dados de Exemplo
+### 18.3 Dados de Exemplo
 
 | Entidade | Quantidade | Exemplos |
 |---|---|---|
@@ -1523,10 +2219,10 @@ const seedPatterns = {
 | **Planos** | 4 | Histórico 2024, Orçamento 2025, FC1, FC2 |
 | **Demanda** | ~50.000 registros | 12-18 meses × 80 SKUs × 12-20 vendedores × 4 planos |
 | **Preços** | 80 entradas | R$ 5,00 a R$ 500,00 por SKU |
-| **Rodadas** | 3 | Jan/25, Fev/25, Mar/25 |
+| **Ciclos** | 3 | Jan/25, Fev/25, Mar/25 |
 | **Usuários** | 5-8 | Admin, Manager, 3-5 Planners, 1 Viewer |
 
-### 17.4 Execução
+### 18.4 Execução
 
 ```bash
 # O seeder será executável via script npm
@@ -1544,14 +2240,14 @@ npm run seed:clean          # Remove todos os dados de seed
 # ├── plans.ts              (seed de planos)
 # ├── demand.ts             (seed de demanda com padrões)
 # ├── prices.ts             (seed de preços)
-# ├── rounds.ts             (seed de rodadas e etapas)
+# ├── cycles.ts             (seed de ciclos e etapas)
 # ├── users.ts              (seed de usuários e permissões)
 # └── utils.ts              (geradores de dados, ruído, sazonalidade)
 ```
 
 ---
 
-## 18. Referências Visuais (StockHub)
+## 19. Referências Visuais (StockHub)
 
 O DemandHub deve seguir **exatamente** os mesmos padrões visuais do StockHub:
 
